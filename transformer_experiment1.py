@@ -930,7 +930,7 @@ def train_model(model, iterator, optimizer, loss_fn, epoch_num, iter_part=150):
 
         '''parameter update'''
         optimizer.step()
-        scheduler.step()
+        # scheduler.step()
 
         '''total loss in each epochs'''
         epoch_loss += float(loss.item())
@@ -1142,7 +1142,7 @@ class TrainModel(pl.LightningModule):
     def forward(self, x, y):
         output, _ = self.model(x, y[:, :-1])
         output_dim = output.shape[-1]
-        output = output.contiguous().view(-1, output_dm)
+        output = output.contiguous().view(-1, output_dim)
         return output
 
     def training_step(self, batch, batch_idx):
@@ -1378,19 +1378,29 @@ print('validation_check_interval: ', val_check_interval, ' batch_steps')
 print('save_interval: ',  hparams.n_steps//save_total_num, ' batch_steps')
 sys.stdout.flush()
 
-# with profiler.profile(with_stack=True, profile_memory=True) as prof:
-trainer = pl.Trainer(gpus=args.gpus,
-                     max_steps=hparams.n_steps,
-                     callbacks=[nstep_check_callback, lr_monitor],
-                     val_check_interval=val_check_interval,
-                     accumulate_grad_batches=accumul_num,
-                     deterministic=True,
-                     accelerator="ddp",
-                     logger=logger,
-                     flush_logs_every_n_steps=100,
-                     log_every_n_steps=1,
-                     progress_bar_refresh_rate=10000,
-                     plugins=DDPPlugin(find_unused_parameters=False),
-                     precision=16)
+if device.type=='cpu':
+    trainer = pl.Trainer(
+                         max_steps=hparams.n_steps,
+                         callbacks=[nstep_check_callback, lr_monitor],
+                         val_check_interval=val_check_interval,
+                         deterministic=True,
+                         logger=logger,
+                         flush_logs_every_n_steps=1,
+                         log_every_n_steps=1,
+                         progress_bar_refresh_rate=1000)
+else:
+    trainer = pl.Trainer(gpus=args.gpus,
+                         max_steps=hparams.n_steps,
+                         callbacks=[nstep_check_callback, lr_monitor],
+                         val_check_interval=val_check_interval,
+                         accumulate_grad_batches=accumul_num,
+                         deterministic=True,
+                         accelerator="ddp",
+                         logger=logger,
+                         flush_logs_every_n_steps=100,
+                         log_every_n_steps=1,
+                         progress_bar_refresh_rate=10000,
+                         plugins=DDPPlugin(find_unused_parameters=False),
+                         precision=16)
 trainer.fit(model, train_loader, valid_loader)
 # print(prof.key_averages(group_by_stack_n=3).table(sort_by='self_cpu_time_total', row_limit=10))
