@@ -3,10 +3,8 @@ let's start transformer!
 the code refered to
 https://github.com/ndb796/Deep-Learning-Paper-Review-and-Practice/blob/master/code_practices/Attention_is_All_You_Need_Tutorial_(German_English).ipynb
 
-1. dataset from wmt 2014 English-German
-2. tokenize them
-3. make transformer model
-4. train and evaluate model
+-dataset from Multi30k
+-baseline
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 imports
@@ -147,6 +145,8 @@ test_ds = sorted([(len(each.src),
                    [TRG.vocab[i] for i in each.trg])
                   for i, each in enumerate(test)], key=lambda data:(data[0], data[1]), reverse=True)
 
+# when max_len_sentence is needed before pad_data
+
 max_len_sentence = (0,0)
 max_len_sentence = max(*[(i,len(vars(train.examples[i])['src'])) for i in range(len(train.examples))], key=lambda x:x[1])
 max_len_sentence = max(max_len_sentence, *[(i,len(vars(train.examples[i])['trg'])) for i in range(len(train.examples))], key=lambda x:x[1])
@@ -155,11 +155,17 @@ max_len_sentence = max(max_len_sentence, *[(i,len(vars(valid.examples[i])['trg']
 max_len_sentence = max(max_len_sentence, *[(i,len(vars(test.examples[i])['src'])) for i in range(len(test.examples))], key=lambda x:x[1])
 max_len_sentence = max(max_len_sentence, *[(i,len(vars(test.examples[i])['trg'])) for i in range(len(test.examples))], key=lambda x:x[1])
 
-print('max_len_sentence: ', max_len_sentence[0], vars(train.examples[max_len_sentence[0]])['src'], '/', vars(train.examples[max_len_sentence[0]])['trg'], 'length', max_len_sentence[1])
+print('max_len_sentence: ', max_len_sentence[1], vars(train.examples[max_len_sentence[0]])['src'], '/', vars(train.examples[max_len_sentence[0]])['trg'], 'length', max_len_sentence[1])
 sys.stdout.flush()
 
 max_len_sentence = max_len_sentence[1]
 
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+collate function for DataLoader
+
+if you want to pad data in a batch, you can add collate_fn in DataLoader
+or you can pad for all sorted data by length before you set DataLoader
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 def pad_data(data):
     '''Find max length of the mini-batch'''
 
@@ -181,8 +187,10 @@ def pad_data(data):
     '''init token'''
     padded_trg = torch.cat((torch.tensor([[TRG.vocab.stoi[TRG.init_token]]] * len(data)), padded_trg), dim=1)
     # max_len_sentence = max(max_len_sentence, len(padded_src[0]), len(padded_trg[0]))
-    # return [(s,t) for s,t in zip(padded_src, padded_trg)]
-    return padded_src, padded_trg
+    '''for pad all before declaring DataLoader'''
+    return [(s,t) for s,t in zip(padded_src, padded_trg)]
+    '''for collate_fn parameter when declaring DataLoader'''
+    # return padded_src, padded_trg
 
 train_ds = pad_data(train_ds)
 valid_ds = pad_data(valid_ds)
@@ -199,9 +207,9 @@ print(f"data example : {vars(train.examples[0])['src']}, {vars(train.examples[0]
 print(f"time : {m}m {s}s")
 sys.stdout.flush()
 
-train_loader = DataLoader(train_ds, batch_size=hparams.batch_size, collate_fn=pad_data, num_workers=4, pin_memory=True)
-valid_loader = DataLoader(valid_ds, batch_size=hparams.batch_size, collate_fn=pad_data, num_workers=4, pin_memory=True)
-test_loader = DataLoader(test_ds, batch_size=hparams.batch_size, collate_fn=pad_data, num_workers=4, pin_memory=True)
+train_loader = DataLoader(train_ds, batch_size=hparams.batch_size, num_workers=1, pin_memory=True)
+valid_loader = DataLoader(valid_ds, batch_size=hparams.batch_size, num_workers=1, pin_memory=True)
+test_loader = DataLoader(test_ds, batch_size=hparams.batch_size, num_workers=1, pin_memory=True)
 
 # example
 # for i, batch in enumerate(dataloader):
@@ -497,7 +505,7 @@ class TransformerEncoder(pl.LightningModule):
 
         '''since no <sos> <eos> are considered in max_len_sentence, we need to +2'''
         self.pos_encoding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
-        self.pos_encoding.freeze()
+        # self.pos_encoding.freeze()
         self.layers = nn.ModuleList([TransformerEncoderLayer(d_k=d_k,
                                                              d_v=d_v,
                                                              d_model=d_model,
@@ -517,7 +525,7 @@ class TransformerEncoder(pl.LightningModule):
         # src = self.dropout(self.tok_embedding(src))
         # pe = get_sinusoid_encoding_table(src_len, src.shape[2], self.device)
         # +positional encoding
-        src = self.dropout(self.tok_embedding(src) + self.pos_encoding(src))
+        src = self.dropout(self.pos_encoding(self.tok_embedding(src)))
         # del pe
         # src: [batch_size, src_len, d_model]
         for layer in self.layers:
@@ -616,8 +624,8 @@ class TransformerDecoder(pl.LightningModule):
         self.tok_embedding = nn.Embedding(output_dim, d_model).from_pretrained(self.pretrained_embedding.embed_mtrx).requires_grad_(False)
 
         '''since no <sos> <eos> are considered in max_len_sentence, we need to +2'''
-        self.pos_embedding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
-        self.pos_embedding.freeze()
+        self.pos_encoding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
+        # self.pos_embedding.freeze()
         self.layers = nn.ModuleList([TransformerDecoderLayer(d_k=d_k,
                                                              d_v=d_v,
                                                              d_model=d_model,
@@ -645,7 +653,7 @@ class TransformerDecoder(pl.LightningModule):
 
         # del pe
         # trg: [batch_size, trg_len, d_model]
-        trg = self.dropout(self.tok_embedding(trg) + self.pos_encoding(trg))
+        trg = self.dropout(self.pos_encoding(self.tok_embedding(trg)))
         for layer in self.layers:
             trg, attention = layer(trg, enc_src, trg_mask, src_mask)
 
@@ -717,9 +725,9 @@ class Transformer(pl.LightningModule):
         # pos_enc_src = self.positional_encoding(embed_src)
         enc_src = self.encoder(src, src_mask)
         # enc_src: [batch_size, src_len, d_model]
-        embed_trg = self.dropout(self.pretrained_embedding(trg))
-        pos_enc_trg = self.positional_encoding(embed_trg)
-        output, attention = self.decoder(pos_enc_trg, enc_src, trg_mask, src_mask)
+        # embed_trg = self.dropout(self.pretrained_embedding(trg))
+        # pos_enc_trg = self.positional_encoding(embed_trg)
+        output, attention = self.decoder(trg, enc_src, trg_mask, src_mask)
         # output: [batch_size, trg_len, output_dim]
         # attention: [batch_size, n_heads, trg_len, src_len]
         return output, attention
@@ -1131,7 +1139,7 @@ class TrainModel(pl.LightningModule):
         self.loss = LabelSmoothingLoss(smoothing=hparams.label_smoothing, classes=len(TRG.vocab.stoi),
                                        ignore_index=TRG_PAD_IDX)
 
-        self.loss.freeze()
+        # self.loss.freeze()
         self.model.apply(utils.initalize_weights)
         '''
         pytorch lightning shows parameter summery already
@@ -1352,55 +1360,59 @@ class CheckpointEveryNSteps(pl.Callback):
     #     global accumulate_loss
     #     accumulate_loss=0
 
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-Training (pytorch lightning)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 '''set argument parser'''
 parser = argparse.ArgumentParser()
 parser.add_argument("--gpus", type=int, default=0, help='the number of gpus')
 args = parser.parse_args()
 
-'''declare model, callbacks, monitors'''
-model = TrainModel()
-lr_monitor = LearningRateMonitor(logging_interval='step')
-save_total_num = 10
-nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=hparams.n_steps//save_total_num)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Training (pytorch lightning)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+def program_loop():
+    '''declare model, callbacks, monitors'''
+    model = TrainModel()
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    save_total_num = 10
+    nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=hparams.n_steps//save_total_num)
 
 
-'''accumulate settings'''
-accumul_num = 64
-'''check interval settings'''
-check_interval = 30
-val_check_interval = int(math.ceil(hparams.n_steps//check_interval))
+    '''accumulate settings'''
+    accumul_num = 64
+    '''check interval settings'''
+    check_interval = 30
+    val_check_interval = int(math.ceil(len(train.examples)//hparams.batch_size) // check_interval)
 
-'''print setting info'''
-print('validation_check_interval: ', val_check_interval, ' batch_steps')
-print('save_interval: ',  hparams.n_steps//save_total_num, ' batch_steps')
-sys.stdout.flush()
+    '''print setting info'''
+    print('validation_check_interval: ', val_check_interval, ' batch_steps')
+    print('save_interval: ',  hparams.n_steps//save_total_num, ' batch_steps')
+    sys.stdout.flush()
 
-if device.type=='cpu':
-    trainer = pl.Trainer(
-                         max_steps=hparams.n_steps,
-                         callbacks=[nstep_check_callback, lr_monitor],
-                         val_check_interval=val_check_interval,
-                         deterministic=True,
-                         logger=logger,
-                         flush_logs_every_n_steps=1,
-                         log_every_n_steps=1,
-                         progress_bar_refresh_rate=1000)
-else:
-    trainer = pl.Trainer(gpus=args.gpus,
-                         max_steps=hparams.n_steps,
-                         callbacks=[nstep_check_callback, lr_monitor],
-                         val_check_interval=val_check_interval,
-                         accumulate_grad_batches=accumul_num,
-                         deterministic=True,
-                         accelerator="ddp",
-                         logger=logger,
-                         flush_logs_every_n_steps=100,
-                         log_every_n_steps=1,
-                         progress_bar_refresh_rate=10000,
-                         plugins=DDPPlugin(find_unused_parameters=False),
-                         precision=16)
-trainer.fit(model, train_loader, valid_loader)
+    if device.type=='cpu':
+        trainer = pl.Trainer(
+                             max_steps=hparams.n_steps,
+                             callbacks=[nstep_check_callback, lr_monitor],
+                             val_check_interval=val_check_interval,
+                             deterministic=True,
+                             logger=logger,
+                             flush_logs_every_n_steps=1,
+                             log_every_n_steps=1,
+                             progress_bar_refresh_rate=1000)
+    else:
+        trainer = pl.Trainer(gpus=args.gpus,
+                             max_steps=hparams.n_steps,
+                             callbacks=[nstep_check_callback, lr_monitor],
+                             val_check_interval=val_check_interval,
+                             accumulate_grad_batches=accumul_num,
+                             deterministic=True,
+                             accelerator="ddp",
+                             logger=logger,
+                             flush_logs_every_n_steps=100,
+                             log_every_n_steps=1,
+                             progress_bar_refresh_rate=10000,
+                             plugins=DDPPlugin(find_unused_parameters=False),
+                             precision=16)
+    trainer.fit(model, train_loader, valid_loader)
+
+if __name__ == '__main__':
+    program_loop()
 # print(prof.key_averages(group_by_stack_n=3).table(sort_by='self_cpu_time_total', row_limit=10))
