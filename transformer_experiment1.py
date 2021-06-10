@@ -178,14 +178,14 @@ def pad_data(data):
     trg_ = list(zip(*data))[3]
 
     '''eos + pad'''
-    padded_src = torch.stack([torch.cat((torch.tensor(txt), torch.tensor([SRC.vocab.stoi[SRC.eos_token]]+([SRC.vocab.stoi[SRC.pad_token]] * (max_len_src - len(txt)))).long())) for txt in src_])
+    padded_src = torch.stack([torch.cat((torch.as_tensor(txt).requires_grad_(False), torch.as_tensor([SRC.vocab.stoi[SRC.eos_token]]+([SRC.vocab.stoi[SRC.pad_token]] * (max_len_src - len(txt)))).requires_grad_(False).long())) for txt in src_])
     '''init token'''
-    padded_src = torch.cat((torch.tensor([[SRC.vocab.stoi[SRC.init_token]]] * len(data)), padded_src), dim=1)
+    padded_src = torch.cat((torch.as_tensor([[SRC.vocab.stoi[SRC.init_token]]] * len(data)).requires_grad_(False), padded_src), dim=1)
 
     '''eos + pad'''
-    padded_trg = torch.stack([torch.cat((torch.tensor(txt), torch.tensor([TRG.vocab.stoi[TRG.eos_token]]+([TRG.vocab.stoi[TRG.pad_token]] * (max_len_trg - len(txt)))).long())) for txt in trg_])
+    padded_trg = torch.stack([torch.cat((torch.as_tensor(txt).requires_grad_(False), torch.as_tensor([TRG.vocab.stoi[TRG.eos_token]]+([TRG.vocab.stoi[TRG.pad_token]] * (max_len_trg - len(txt)))).requires_grad_(False).long())) for txt in trg_])
     '''init token'''
-    padded_trg = torch.cat((torch.tensor([[TRG.vocab.stoi[TRG.init_token]]] * len(data)), padded_trg), dim=1)
+    padded_trg = torch.cat((torch.as_tensor([[TRG.vocab.stoi[TRG.init_token]]] * len(data)).requires_grad_(False), padded_trg), dim=1)
     # max_len_sentence = max(max_len_sentence, len(padded_src[0]), len(padded_trg[0]))
     '''for pad all before declaring DataLoader'''
     return [(s,t) for s,t in zip(padded_src, padded_trg)]
@@ -207,9 +207,9 @@ print(f"data example : {vars(train.examples[0])['src']}, {vars(train.examples[0]
 print(f"time : {m}m {s}s")
 sys.stdout.flush()
 
-train_loader = DataLoader(train_ds, batch_size=hparams.batch_size, num_workers=1, pin_memory=True)
-valid_loader = DataLoader(valid_ds, batch_size=hparams.batch_size, num_workers=1, pin_memory=True)
-test_loader = DataLoader(test_ds, batch_size=hparams.batch_size, num_workers=1, pin_memory=True)
+train_loader = DataLoader(train_ds, batch_size=hparams.batch_size, num_workers=4, pin_memory=True)
+valid_loader = DataLoader(valid_ds, batch_size=hparams.batch_size, num_workers=4, pin_memory=True)
+test_loader = DataLoader(test_ds, batch_size=hparams.batch_size, num_workers=4, pin_memory=True)
 
 # example
 # for i, batch in enumerate(dataloader):
@@ -1215,7 +1215,9 @@ class TrainModel(pl.LightningModule):
         loss = torch.stack(outs).mean()
         self.log("val_loss", loss, sync_dist=True)
         self.log('val_PPL', torch.exp(loss), sync_dist=True)
-        # self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+
+    def on_epoch_end(self) -> None:
+        self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
 
     def configure_optimizers(self):
         # warmup_steps = 4000
@@ -1263,7 +1265,7 @@ class TrainModel(pl.LightningModule):
         trg_indexes = [TRG.vocab.stoi[TRG.init_token]]
 
         for i in range(max_len):
-            trg_tensor = torch.LongTensor(trg_indexes).unsqueeze(0).to(device)
+            trg_tensor = torch.LongTensor(trg_indexes).unsqueeze(0)
             trg_mask = self.model.make_src_mask(trg_tensor)
 
             with torch.no_grad():
@@ -1285,7 +1287,7 @@ class TrainModel(pl.LightningModule):
         pred_trgs = []
         index = 0
 
-        for datum in data:
+        for datum in data[:100]:
             src = vars(datum)['src']
             trg = vars(datum)['trg']
 
@@ -1304,6 +1306,7 @@ class TrainModel(pl.LightningModule):
                 print(f'answer: {trg}')
 
         bleu = bleu_score(pred_trgs, trgs, max_n=4, weights=[0.25, 0.25, 0.25, 0.25])
+        self.log('bleu_score', bleu, sync_dist=True)
         print(f'Total BLEU Score = {bleu * 100:.2f}')
         sys.stdout.flush()
 
@@ -1353,7 +1356,7 @@ class CheckpointEveryNSteps(pl.Callback):
                 filename = f"{self.prefix}_{epoch=}_{global_step=}.ckpt"
                 ckpt_path = os.path.join(trainer.checkpoint_callback.dirpath, filename)
                 trainer.save_checkpoint(ckpt_path)
-            trainer.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+            # trainer.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
             # trainer.run_evaluation()
             # trainer.model.show_bleu_score(test, SRC, TRG)
     # def on_epoch_end(self, trainer: pl.Trainer, _):
@@ -1372,8 +1375,8 @@ def program_loop():
     '''declare model, callbacks, monitors'''
     model = TrainModel()
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    save_total_num = 10
-    nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=hparams.n_steps//save_total_num)
+    save_total_num = 100
+    nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=int(math.ceil(len(train.examples)//hparams.batch_size)//save_total_num))
 
 
     '''accumulate settings'''
@@ -1384,11 +1387,11 @@ def program_loop():
 
     '''print setting info'''
     print('validation_check_interval: ', val_check_interval, ' batch_steps')
-    print('save_interval: ',  hparams.n_steps//save_total_num, ' batch_steps')
+    print('save_interval: ',  int(math.ceil(len(train.examples)//hparams.batch_size)//save_total_num), ' batch_steps')
     sys.stdout.flush()
 
     if device.type=='cpu':
-        trainer = pl.Trainer(
+        trainer = pl.Trainer(max_epochs=hparams.n_epochs,
                              max_steps=hparams.n_steps,
                              callbacks=[nstep_check_callback, lr_monitor],
                              val_check_interval=val_check_interval,
@@ -1396,17 +1399,18 @@ def program_loop():
                              logger=logger,
                              flush_logs_every_n_steps=1,
                              log_every_n_steps=1,
-                             progress_bar_refresh_rate=1000)
+                             progress_bar_refresh_rate=100)
     else:
         trainer = pl.Trainer(gpus=args.gpus,
-                             max_steps=hparams.n_steps,
+                             max_epochs=hparams.n_epochs,
+                             # max_steps=hparams.n_steps,
                              callbacks=[nstep_check_callback, lr_monitor],
                              val_check_interval=val_check_interval,
                              accumulate_grad_batches=accumul_num,
                              deterministic=True,
                              accelerator="ddp",
                              logger=logger,
-                             flush_logs_every_n_steps=100,
+                             flush_logs_every_n_steps=10,
                              log_every_n_steps=1,
                              progress_bar_refresh_rate=10000,
                              plugins=DDPPlugin(find_unused_parameters=False),
