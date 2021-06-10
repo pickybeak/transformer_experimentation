@@ -348,10 +348,13 @@ class MultiHeadAttentionLayer(pl.LightningModule):
         self.n_heads = n_heads
 
         self.w_q = nn.Linear(d_model, d_k * n_heads)
+        nn.init.xavier_uniform_(self.w_q.weight.data)
         self.w_k = nn.Linear(d_model, d_k * n_heads)
+        nn.init.xavier_uniform_(self.w_k.weight.data)
         self.w_v = nn.Linear(d_model, d_v * n_heads)
-
+        nn.init.xavier_uniform_(self.w_v.weight.data)
         self.w_o = nn.Linear(d_v * n_heads, d_model)
+        nn.init.xavier_uniform_(self.w_o.weight.data)
 
         self.dropout = nn.Dropout(dropout_ratio)
         self.scale = torch.sqrt(torch.FloatTensor([self.d_k]))
@@ -415,7 +418,9 @@ class PositionwiseFeedforwardLayer(pl.LightningModule):
             return True
 
         self.w_ff1 = nn.Linear(d_model, d_ff)
+        nn.init.xavier_uniform_(self.w_ff1.weight.data)
         self.w_ff2 = nn.Linear(d_ff, d_model)
+        nn.init.xavier_uniform_(self.w_ff2.weight.data)
 
         self.dropout = nn.Dropout(dropout_ratio)
 
@@ -501,7 +506,7 @@ class TransformerEncoder(pl.LightningModule):
             return True
 
         self.pretrained_embedding = PretrainedEmbedding(SRC.vocab.stoi, d_model, filename='multi30k_src_glove.model')
-        self.tok_embedding = nn.Embedding(input_dim, d_model).from_pretrained(self.pretrained_embedding.embed_mtrx).requires_grad_(False)
+        # self.tok_embedding = nn.Embedding(input_dim, d_model).from_pretrained(self.pretrained_embedding.embed_mtrx).requires_grad_(False)
 
         '''since no <sos> <eos> are considered in max_len_sentence, we need to +2'''
         self.pos_encoding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
@@ -525,7 +530,7 @@ class TransformerEncoder(pl.LightningModule):
         # src = self.dropout(self.tok_embedding(src))
         # pe = get_sinusoid_encoding_table(src_len, src.shape[2], self.device)
         # +positional encoding
-        src = self.dropout(self.pos_encoding(self.tok_embedding(src)))
+        src = self.dropout(self.pos_encoding(self.pretrained_embedding(src)))
         # del pe
         # src: [batch_size, src_len, d_model]
         for layer in self.layers:
@@ -621,7 +626,7 @@ class TransformerDecoder(pl.LightningModule):
             return True
 
         self.pretrained_embedding = PretrainedEmbedding(TRG.vocab.stoi, d_model, filename='multi30k_trg_glove.model')
-        self.tok_embedding = nn.Embedding(output_dim, d_model).from_pretrained(self.pretrained_embedding.embed_mtrx).requires_grad_(False)
+        # self.tok_embedding = nn.Embedding(output_dim, d_model).from_pretrained(self.pretrained_embedding.embed_mtrx).requires_grad_(False)
 
         '''since no <sos> <eos> are considered in max_len_sentence, we need to +2'''
         self.pos_encoding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
@@ -633,6 +638,7 @@ class TransformerDecoder(pl.LightningModule):
                                                              d_ff=d_ff,
                                                              dropout_ratio=dropout_ratio) for _ in range(n_layers)])
         self.affine = nn.Linear(d_model, output_dim)
+        nn.init.xavier_uniform_(self.affine.weight.data)
         self.dropout = nn.Dropout(dropout_ratio)
         # self.scale = torch.sqrt(torch.FloatTensor([d_k]))
 
@@ -653,7 +659,7 @@ class TransformerDecoder(pl.LightningModule):
 
         # del pe
         # trg: [batch_size, trg_len, d_model]
-        trg = self.dropout(self.pos_encoding(self.tok_embedding(trg)))
+        trg = self.dropout(self.pos_encoding(self.pretrained_embedding(trg)))
         for layer in self.layers:
             trg, attention = layer(trg, enc_src, trg_mask, src_mask)
 
@@ -690,7 +696,7 @@ class Transformer(pl.LightningModule):
         self.trg_pad_idx = trg_pad_idx
 
         self.dropout = nn.Dropout(dropout_ratio)
-        self.positional_encoding = PositionalEncoding(max_len_sentence+2, d_model)
+        # self.positional_encoding = PositionalEncoding(max_len_sentence+2, d_model)
 
     def make_src_mask(self, src):
         # src: [batch_size, src_len]
@@ -1140,7 +1146,7 @@ class TrainModel(pl.LightningModule):
                                        ignore_index=TRG_PAD_IDX)
 
         # self.loss.freeze()
-        self.model.apply(utils.initalize_weights)
+        # self.model.apply(utils.initalize_weights)
         '''
         pytorch lightning shows parameter summery already
         '''
@@ -1215,9 +1221,8 @@ class TrainModel(pl.LightningModule):
         loss = torch.stack(outs).mean()
         self.log("val_loss", loss, sync_dist=True)
         self.log('val_PPL', torch.exp(loss), sync_dist=True)
-
-    def on_epoch_end(self) -> None:
         self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+        
 
     def configure_optimizers(self):
         # warmup_steps = 4000
@@ -1254,7 +1259,7 @@ class TrainModel(pl.LightningModule):
             print(f'src tokens : {tokens}')
             print(f'src indexes : {src_indexes}')
 
-        src_tensor = torch.LongTensor(src_indexes).unsqueeze(0)
+        src_tensor = torch.LongTensor(src_indexes).unsqueeze(0).to(self.device)
 
         src_pad_mask = self.model.make_src_mask(src_tensor)
 
@@ -1265,7 +1270,7 @@ class TrainModel(pl.LightningModule):
         trg_indexes = [TRG.vocab.stoi[TRG.init_token]]
 
         for i in range(max_len):
-            trg_tensor = torch.LongTensor(trg_indexes).unsqueeze(0)
+            trg_tensor = torch.LongTensor(trg_indexes).unsqueeze(0).to(self.device)
             trg_mask = self.model.make_src_mask(trg_tensor)
 
             with torch.no_grad():
@@ -1375,14 +1380,14 @@ def program_loop():
     '''declare model, callbacks, monitors'''
     model = TrainModel()
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    save_total_num = 100
-    nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=int(math.ceil(len(train.examples)//hparams.batch_size)//save_total_num))
+    save_total_num = 20
+    nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=int(math.ceil(len(train.examples)//hparams.batch_size)*hparams.n_epochs//save_total_num))
 
 
     '''accumulate settings'''
-    accumul_num = 64
+    accumul_num = 16
     '''check interval settings'''
-    check_interval = 30
+    check_interval = 50
     val_check_interval = int(math.ceil(len(train.examples)//hparams.batch_size) // check_interval)
 
     '''print setting info'''
