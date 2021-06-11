@@ -558,7 +558,8 @@ def program_loop():
                                                     last_epoch=-1)
             # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
             lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-            '''
+			'''
+            
             return [optimizer] #, [lr_scheduler]
 
 
@@ -622,7 +623,7 @@ def program_loop():
                                                     last_epoch=-1)
             # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
             lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-            '''
+			'''
             return [optimizer] #, [lr_scheduler]
 
 
@@ -685,13 +686,14 @@ def program_loop():
         def configure_optimizers(self):
             # warmup_steps = 4000
             optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
-            '''
+            ''' 
             scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
                                                     lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*hparams.warmup_steps**(-1.5)),
                                                     last_epoch=-1)
             # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
             lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
             '''
+
             return [optimizer] #, [lr_scheduler]
 
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -1206,8 +1208,9 @@ def program_loop():
 
         def training_epoch_end(self, outs):
             loss = torch.stack([outs[i]['loss'] for i in range(len(outs))]).mean()
-            self.log("train_loss", loss, sync_dist=True, prog_bar=True)
-            self.log('train_PPL', torch.exp(loss), sync_dist=True)
+            self.log("train_epochs_mean_loss", loss, sync_dist=True, prog_bar=True)
+            self.log('train_epochs_mean_PPL', torch.exp(loss), sync_dist=True)
+            self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
 
 
         def validation_step(self, batch, batch_idx):
@@ -1236,9 +1239,7 @@ def program_loop():
             loss = torch.stack(outs).mean()
             self.log("val_loss", loss, sync_dist=True)
             self.log('val_PPL', torch.exp(loss), sync_dist=True)
-
-        def on_train_end(self) -> None:
-            self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+            # self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
 
         def configure_optimizers(self):
             # warmup_steps = 4000
@@ -1249,7 +1250,7 @@ def program_loop():
                                                     last_epoch=-1)
             # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
             lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-            '''
+			'''
             return [optimizer] #, [lr_scheduler]
 
         def get_progress_bar_dict(self):
@@ -1398,19 +1399,20 @@ def program_loop():
     '''declare model, callbacks, monitors'''
     model = TrainModel()
     lr_monitor = LearningRateMonitor(logging_interval='step')
+    batches_for_1epoch = int(math.ceil(len(train.examples)//hparams.batch_size))
     save_total_num = 10
-    nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=int(math.ceil(len(train.examples)//hparams.batch_size)*hparams.n_epochs)//save_total_num)
+    nstep_check_callback = CheckpointEveryNSteps(save_batch_frequency=(batches_for_1epoch*hparams.n_epochs)//save_total_num)
 
 
     '''accumulate settings'''
-    accumul_num = 16
+    accumul_num = 8 
     '''check interval settings'''
     check_interval = 10
-    val_check_interval = int(math.ceil(len(train.examples)//hparams.batch_size) // check_interval)
+    val_check_interval = int(batches_for_1epoch // check_interval)
 
     '''print setting info'''
     print('validation_check_interval: ', val_check_interval, ' batch_steps')
-    print('save_interval: ',  int(math.ceil(len(train.examples)//hparams.batch_size)*hparams.n_epochs)//save_total_num, ' batch_steps')
+    print('save_interval: ',  (batches_for_1epoch*hparams.n_epochs)//save_total_num, ' batch_steps')
     sys.stdout.flush()
 
     if device.type=='cpu':
@@ -1431,9 +1433,9 @@ def program_loop():
                              deterministic=True,
                              accelerator="ddp",
                              logger=logger,
-                             flush_logs_every_n_steps=10,
+                             flush_logs_every_n_steps=1,
                              log_every_n_steps=1,
-                             progress_bar_refresh_rate=10000,
+                             progress_bar_refresh_rate=1000,
                              plugins=DDPPlugin(find_unused_parameters=False),
                              precision=16)
     trainer.fit(model, train_loader, valid_loader)

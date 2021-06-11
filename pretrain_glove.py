@@ -39,15 +39,15 @@ for i in range(length):
 
 corpus = glove.Corpus()
 corpus2 = glove.Corpus()
-corpus.fit(src_sentences, window=10)
-corpus2.fit(trg_sentences, window=10)
+corpus.fit(src_sentences, window=6)
+corpus2.fit(trg_sentences, window=6)
 
-glove = Glove(no_components=512, learning_rate=0.05)
+glove = Glove(no_components=256, learning_rate=0.01)
 
-glove.fit(corpus.matrix, epochs=90, no_threads=4, verbose=True)
+glove.fit(corpus.matrix, epochs=150, no_threads=4, verbose=True)
 glove.add_dictionary(corpus.dictionary)
 glove.save('multi30k_src_glove.model')
 
-glove.fit(corpus2.matrix, epochs=90, no_threads=4, verbose=True)
+glove.fit(corpus2.matrix, epochs=150, no_threads=4, verbose=True)
 glove.add_dictionary(corpus2.dictionary)
 glove.save('multi30k_trg_glove.model')
