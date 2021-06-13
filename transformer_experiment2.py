@@ -60,7 +60,7 @@ def program_loop():
 
 
     # accumulate_loss = 0
-    logger = TensorBoardLogger('runs', name='transformer_exp1_baseline', default_hp_metric=False)
+    logger = TensorBoardLogger('runs', name='transformer_exp2_baseline', default_hp_metric=False)
 
     def tokenize_en(text):
         return [token.text for token in spacy_en.tokenizer(text)]
@@ -541,7 +541,7 @@ def program_loop():
             # src = self.dropout(self.tok_embedding(src))
             # pe = get_sinusoid_encoding_table(src_len, src.shape[2], self.device)
             # +positional encoding
-            src = self.dropout(self.pos_embedding(torch.arange(src_len)) + self.input_embedding(src))
+            src = self.dropout(self.pos_embedding(torch.arange(src_len).to(self.device).unsqueeze(0).repeat(batch_size, 1)) + self.input_embedding(src))
             # del pe
             # src: [batch_size, src_len, d_model]
             for layer in self.layers:
@@ -678,7 +678,7 @@ def program_loop():
 
             # del pe
             # trg: [batch_size, trg_len, d_model]
-            trg = self.dropout(self.pos_embedding(torch.arange(trg_len)) + self.input_embedding(trg))
+            trg = self.dropout(self.pos_embedding(torch.arange(trg_len).to(self.device).unsqueeze(0).repeat(batch_size, 1)) + self.input_embedding(trg))
             for layer in self.layers:
                 trg, attention = layer(trg, enc_src, trg_mask, src_mask)
 
@@ -1172,6 +1172,7 @@ def program_loop():
                                            ignore_index=TRG_PAD_IDX)
 
             self.loss.freeze()
+            self.bleu_epoch_interval = 4
             # self.model.apply(utils.initalize_weights)
             '''
             pytorch lightning shows parameter summery already
@@ -1219,7 +1220,8 @@ def program_loop():
             loss = torch.stack([outs[i]['loss'] for i in range(len(outs))]).mean()
             self.log("train_epochs_mean_loss", loss, sync_dist=True, prog_bar=True)
             self.log('train_epochs_mean_PPL', torch.exp(loss), sync_dist=True)
-            self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+            if self.current_epoch +1 % self.bleu_epoch_interval == 0:
+                self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence+1)
 
 
         def validation_step(self, batch, batch_idx):
@@ -1248,7 +1250,7 @@ def program_loop():
             loss = torch.stack(outs).mean()
             self.log("val_loss", loss, sync_dist=True)
             self.log('val_PPL', torch.exp(loss), sync_dist=True)
-            # self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+            # self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence+1)
 
         def configure_optimizers(self):
             # warmup_steps = 4000
@@ -1339,7 +1341,7 @@ def program_loop():
                     print(f'answer: {trg}')
 
             bleu = bleu_score(pred_trgs, trgs, max_n=4, weights=[0.25, 0.25, 0.25, 0.25])
-            self.log('bleu_score', bleu, sync_dist=True)
+            self.log('bleu_score', bleu * 100, sync_dist=True)
             print(f'Total BLEU Score = {bleu * 100:.2f}')
             sys.stdout.flush()
 
@@ -1414,7 +1416,7 @@ def program_loop():
 
 
     '''accumulate settings'''
-    accumul_num = 8 
+    accumul_num = 16 
     '''check interval settings'''
     check_interval = 10
     val_check_interval = int(batches_for_1epoch // check_interval)
@@ -1426,7 +1428,7 @@ def program_loop():
 
     if device.type=='cpu':
         trainer = pl.Trainer(max_epochs=hparams.n_epochs,
-                             callbacks=[nstep_check_callback, lr_monitor],
+                             callbacks=[nstep_check_callback],
                              val_check_interval=val_check_interval,
                              deterministic=True,
                              logger=logger,
@@ -1436,7 +1438,7 @@ def program_loop():
     else:
         trainer = pl.Trainer(gpus=args.gpus,
                              max_epochs=hparams.n_epochs,
-                             callbacks=[nstep_check_callback, lr_monitor],
+                             callbacks=[nstep_check_callback],
                              val_check_interval=val_check_interval,
                              accumulate_grad_batches=accumul_num,
                              deterministic=True,
