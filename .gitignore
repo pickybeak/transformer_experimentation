@@ -4,3 +4,4 @@ __pycache__
 runs
 *.swp
 nohup.out
+*log*

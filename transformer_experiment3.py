@@ -4,9 +4,8 @@ the code refered to
 https://github.com/ndb796/Deep-Learning-Paper-Review-and-Practice/blob/master/code_practices/Attention_is_All_You_Need_Tutorial_(German_English).ipynb
 
 -dataset from Multi30k
--sinusoidal positional encoding, pretrained embedding with glove, smooth labeling, custom learning rate just like original transformer
-(need to activate custom learning rate)
--have no clue but some reason, it does not converge under loss of 2
+-baseline
+-no pretrained embedding, no sinusoidal positional encoding
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 imports
@@ -61,7 +60,7 @@ def program_loop():
 
 
     # accumulate_loss = 0
-    logger = TensorBoardLogger('runs', name='transformer_exp1_baseline', default_hp_metric=False)
+    logger = TensorBoardLogger('runs', name='transformer_exp3_baseline', default_hp_metric=False)
 
     def tokenize_en(text):
         return [token.text for token in spacy_en.tokenizer(text)]
@@ -514,12 +513,15 @@ def program_loop():
             def automatic_optimization(self):
                 return True
 
-            # self.pretrained_embedding = PretrainedEmbedding(SRC.vocab.stoi, d_model, filename='multi30k_src_glove.model')
-            # self.tok_embedding = nn.Embedding(input_dim, d_model).from_pretrained(self.pretrained_embedding.embed_mtrx).requires_grad_(False)
+            self.pretrained_embedding = PretrainedEmbedding(SRC.vocab.stoi, d_model, filename='multi30k_src_glove.model')
+            # self.input_embedding = nn.Embedding(len(SRC.vocab.stoi), d_model)
+            # nn.init.xavier_uniform_(self.input_embedding.weight.data)
 
             '''since no <sos> <eos> are considered in max_len_sentence, we need to +2'''
-            self.pos_encoding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
-            # self.pos_encoding.freeze()
+            # self.pos_encoding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
+            self.pos_embedding = nn.Embedding(max_length, d_model)
+            nn.init.xavier_uniform_(self.pos_embedding.weight.data)
+
             self.layers = nn.ModuleList([TransformerEncoderLayer(d_k=d_k,
                                                                  d_v=d_v,
                                                                  d_model=d_model,
@@ -530,7 +532,7 @@ def program_loop():
             # self.scale = torch.sqrt(torch.FloatTensor([d_k]))
 
         def forward(self, src, src_mask):
-            batch_size =src.shape[0]
+            batch_size = src.shape[0]
             src_len = src.shape[1]
 
             '''to map position index information'''
@@ -539,7 +541,8 @@ def program_loop():
             # src = self.dropout(self.tok_embedding(src))
             # pe = get_sinusoid_encoding_table(src_len, src.shape[2], self.device)
             # +positional encoding
-            src = self.dropout(self.pos_encoding(self.pretrained_embedding(src)))
+            src = self.dropout(self.pos_embedding(torch.arange(src_len).to(self.device).unsqueeze(0).repeat(batch_size, 1)) + self.pretrained_embedding(src))
+            # src = self.dropout(self.pos_encoding(self.input_embedding(src)))
             # del pe
             # src: [batch_size, src_len, d_model]
             for layer in self.layers:
@@ -640,10 +643,13 @@ def program_loop():
                 return True
 
             self.pretrained_embedding = PretrainedEmbedding(TRG.vocab.stoi, d_model, filename='multi30k_trg_glove.model')
-            # self.tok_embedding = nn.Embedding(output_dim, d_model).from_pretrained(self.pretrained_embedding.embed_mtrx).requires_grad_(False)
+            # self.input_embedding = nn.Embedding(len(TRG.vocab.stoi), d_model)
+            # nn.init.xavier_uniform_(self.input_embedding.weight.data)
 
             '''since no <sos> <eos> are considered in max_len_sentence, we need to +2'''
-            self.pos_encoding = PositionalEncoding(max_len_sentence+2, hparams.d_model)
+            # self.pos_encoding = PositionalEncoding(max_length, hparams.d_model)
+            self.pos_embedding = nn.Embedding(max_length, d_model)
+            nn.init.xavier_uniform_(self.pos_embedding.weight.data)
 
             self.layers = nn.ModuleList([TransformerDecoderLayer(d_k=d_k,
                                                                  d_v=d_v,
@@ -673,7 +679,8 @@ def program_loop():
 
             # del pe
             # trg: [batch_size, trg_len, d_model]
-            trg = self.dropout(self.pos_encoding(self.pretrained_embedding(trg)))
+            trg = self.dropout(self.pos_embedding(torch.arange(trg_len).to(self.device).unsqueeze(0).repeat(batch_size, 1)) + self.pretrained_embedding(trg))
+            # trg = self.dropout(self.pos_encoding(self.input_embedding(trg)))
             for layer in self.layers:
                 trg, attention = layer(trg, enc_src, trg_mask, src_mask)
 
@@ -1143,7 +1150,8 @@ def program_loop():
                                      n_layers=hparams.n_decoder,
                                      n_heads=hparams.n_heads,
                                      d_ff=hparams.d_ff,
-                                     dropout_ratio=hparams.dropout_ratio)
+                                     dropout_ratio=hparams.dropout_ratio,
+                                     max_length=max_len_sentence+2)
 
             dec = TransformerDecoder(output_dim=OUTPUT_DIM,
                                      d_k=hparams.d_k,
@@ -1152,7 +1160,8 @@ def program_loop():
                                      n_layers=hparams.n_decoder,
                                      n_heads=hparams.n_heads,
                                      d_ff=hparams.d_ff,
-                                     dropout_ratio=hparams.dropout_ratio)
+                                     dropout_ratio=hparams.dropout_ratio,
+                                     max_length=max_len_sentence+2)
 
             self.model = Transformer(encoder=enc,
                                      decoder=dec,
@@ -1213,8 +1222,8 @@ def program_loop():
             loss = torch.stack([outs[i]['loss'] for i in range(len(outs))]).mean()
             self.log("train_epochs_mean_loss", loss, sync_dist=True, prog_bar=True)
             self.log('train_epochs_mean_PPL', torch.exp(loss), sync_dist=True)
-            if self.current_epoch +1 % self.bleu_epoch_interval == 0:
-                self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+            if (self.current_epoch +1) % self.bleu_epoch_interval == 0:
+                self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence+1)
 
 
         def validation_step(self, batch, batch_idx):
@@ -1243,7 +1252,7 @@ def program_loop():
             loss = torch.stack(outs).mean()
             self.log("val_loss", loss, sync_dist=True)
             self.log('val_PPL', torch.exp(loss), sync_dist=True)
-            # self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence)
+            # self.show_bleu_score(test, SRC, TRG, max_len=max_len_sentence+1)
 
         def configure_optimizers(self):
             # warmup_steps = 4000
@@ -1334,7 +1343,7 @@ def program_loop():
                     print(f'answer: {trg}')
 
             bleu = bleu_score(pred_trgs, trgs, max_n=4, weights=[0.25, 0.25, 0.25, 0.25])
-            self.log('bleu_score', bleu, sync_dist=True)
+            self.log('bleu_score', bleu * 100, sync_dist=True)
             print(f'Total BLEU Score = {bleu * 100:.2f}')
             sys.stdout.flush()
 
@@ -1421,7 +1430,7 @@ def program_loop():
 
     if device.type=='cpu':
         trainer = pl.Trainer(max_epochs=hparams.n_epochs,
-                             callbacks=[nstep_check_callback, lr_monitor],
+                             callbacks=[nstep_check_callback],
                              val_check_interval=val_check_interval,
                              deterministic=True,
                              logger=logger,
@@ -1431,7 +1440,7 @@ def program_loop():
     else:
         trainer = pl.Trainer(gpus=args.gpus,
                              max_epochs=hparams.n_epochs,
-                             callbacks=[nstep_check_callback, lr_monitor],
+                             callbacks=[nstep_check_callback],
                              val_check_interval=val_check_interval,
                              accumulate_grad_batches=accumul_num,
                              deterministic=True,
