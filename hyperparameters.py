@@ -12,3 +12,6 @@ warmup_steps = 4000
 learning_rate = 0.005
 n_epochs = 1000
 n_steps = 100000
+
+# for relative position encoding
+k=3
