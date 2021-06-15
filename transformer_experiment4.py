@@ -60,7 +60,7 @@ def program_loop():
 
 
     # accumulate_loss = 0
-    logger = TensorBoardLogger('runs', name='transformer_exp3_baseline', default_hp_metric=False)
+    logger = TensorBoardLogger('runs', name='transformer_exp4_baseline', default_hp_metric=False)
 
     def tokenize_en(text):
         return [token.text for token in spacy_en.tokenizer(text)]
@@ -336,7 +336,7 @@ def program_loop():
     Self Attention
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
     class MultiHeadAttentionLayer(pl.LightningModule):
-        def __init__(self, d_k, d_v, d_model, n_heads, dropout_ratio, max_length=100, k=hparams.k):
+        def __init__(self, d_k, d_v, d_model, n_heads, dropout_ratio, max_length=100, k=hparams.k, self_=True):
             super().__init__()
             @property
             def automatic_optimization(self):
@@ -349,6 +349,7 @@ def program_loop():
             self.d_model = d_model
             self.n_heads = n_heads
             self.max_length = max_length
+            self.self_ = self_
 
             self.w_q = nn.Linear(d_model, d_k * n_heads)
             nn.init.xavier_uniform_(self.w_q.weight.data)
@@ -363,17 +364,18 @@ def program_loop():
             scale = torch.sqrt(torch.FloatTensor([self.d_k]))
             self.register_buffer("scale", scale)
 
-            self.pos_key_embedding = nn.Embedding(2*k+1, self.d_k)
-            nn.init.xavier_uniform_(self.pos_key_embedding.weight.data)
+            if self.self_:
+                self.pos_key_embedding = nn.Embedding(2*k+1, self.d_k)
+                nn.init.xavier_uniform_(self.pos_key_embedding.weight.data)
 
-            self.pos_value_embedding = nn.Embedding(2*k+1, self.d_k)
-            nn.init.xavier_uniform_(self.pos_value_embedding.weight.data)
+                self.pos_value_embedding = nn.Embedding(2*k+1, self.d_k)
+                nn.init.xavier_uniform_(self.pos_value_embedding.weight.data)
 
-            relation_map = torch.IntTensor(self.max_length, self.max_length)
-            for i in range(max_length):
-                relation_map[i] = torch.arange(start=k-i, end=k-i+max_length)
-            torch.clip(relation_map, min=0, max=2*k+1)
-            self.register_buffer("relation_map", relation_map)
+                relation_map = torch.IntTensor(self.max_length, self.max_length)
+                for i in range(max_length):
+                    relation_map[i] = torch.arange(start=k-i, end=k-i+max_length)
+                torch.clip(relation_map, min=0, max=2*k+1)
+                self.register_buffer("relation_map", relation_map)
 
         def forward(self, query, key, value, mask=None):
             # with profiler.record_function("MultiHeadAttentionLayer"):
@@ -386,11 +388,13 @@ def program_loop():
             V = self.w_v(value)
 
             # embed relative position vector
-            relation_map = self.relation_map[:query_len, :key_len]
-            key_relative = self.pos_key_embedding(relation_map)
-            key_relative = key_relative.view(query_len, self.d_k, key_len)
-            value_relative = self.pos_value_embedding(relation_map)
-            value_relative = value_relative.view(query_len, self.d_k, key_len)
+            if self.self_:
+                key_relation_map = self.relation_map[:query_len, :key_len]
+                value_relation_map = self.relation_map[:query_len, :value_len]
+                key_relative = self.pos_key_embedding(key_relation_map)
+                key_relative = key_relative.view(query_len, self.d_k, key_len)
+                value_relative = self.pos_value_embedding(value_relation_map)
+                # value_relative = value_relative.view(query_len, self.d_k, value_len)
 
             # make seperate heads
             Q = Q.view(batch_size, -1, self.n_heads, self.d_k).permute(0,2,1,3)
@@ -403,19 +407,16 @@ def program_loop():
             similarity = torch.matmul(Q, K.permute(0,1,3,2)) / self.scale
             # similarity: [batch_size, n_heads, query_len, key_len]
             
-            query_operator = Q.view(batch_size, self.n_heads, query_len, self.d_k).permute(1,2,0,3)
-            query_operator = query_operator.reshape(query_len, batch_size*self.n_heads, self.d_k)
+            if self.self_:
+                query_operator = Q.view(batch_size, self.n_heads, query_len, self.d_k).permute(1,2,0,3)
+                # query_operator : [query_len, batch_size, n_heads, d_k]
+                query_operator = query_operator.reshape(query_len, batch_size*self.n_heads, self.d_k)
 
-            query_operator = torch.matmul(query_operator, key_relative)
-            query_operator = query_operator.view(batch_size, self.n_heads, query_len, -1)
-
-            similarity = similarity + query_operator
-
-            value_operator = V.view(batch_size, self.n_heads, value_len, self.d_k).permute(1,2,0,3)
-            value_operator = value_operator.reshape(value_len, batch_size*self.n_heads, self.d_k)
-
-            value_operator = torch.matmul(value_operator, value_relative)
-            value_operator = value_operator.view(batch_size, self.n_heads, value_len, -1)
+                query_operator = torch.matmul(query_operator, key_relative)
+                query_operator = query_operator.view(batch_size, self.n_heads, query_len, -1)
+                # query_operator : [batch_size, n_heads, query_len, key_len]
+			
+                similarity += query_operator
 
             if mask is not None:
                 similarity = similarity.masked_fill(mask==0, -1e10)
@@ -424,9 +425,18 @@ def program_loop():
             # similarity_norm : [batch_size, n_heads, query_len, key_len]
 
             # dot product attention
+            # value_relative = torch.sum(value_relative, dim=1).to(self.device)
             x = torch.matmul(self.dropout(similarity_norm), V)
-            
-            x += value_operator
+
+            if self.self_:
+                value_operator = similarity_norm.view(batch_size, self.n_heads, query_len, key_len).permute(1,2,0,3)
+                # value_operator : [query_len, batch_size, n_heads, key_len]
+                value_operator = value_operator.reshape(query_len, batch_size*self.n_heads, key_len)
+
+                value_operator = torch.matmul(value_operator, value_relative)
+                value_operator = value_operator.view(batch_size, self.n_heads, query_len, self.d_k)
+                # value_operator : [batch_size, n_heads, query_len, d_k]
+                x += value_operator
 
             # x: [batch_size, n_heads, query_len, key_len]
             x = x.permute(0, 2, 1, 3).contiguous()
@@ -630,7 +640,8 @@ def program_loop():
                                                               d_v=d_v,
                                                               d_model=d_model,
                                                               n_heads=n_heads,
-                                                              dropout_ratio=dropout_ratio)
+                                                              dropout_ratio=dropout_ratio,
+															  self_=False)
 
             self.enc_dec_attn_layer_norm = nn.LayerNorm(d_model)
 
@@ -1214,7 +1225,6 @@ def program_loop():
             self.loss = LabelSmoothingLoss(smoothing=hparams.label_smoothing, classes=len(TRG.vocab.stoi),
                                            ignore_index=TRG_PAD_IDX)
 
-            self.loss.freeze()
             self.bleu_epoch_interval = 4
             # self.model.apply(utils.initalize_weights)
             '''
