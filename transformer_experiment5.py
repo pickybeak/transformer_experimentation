@@ -6,6 +6,7 @@ https://github.com/ndb796/Deep-Learning-Paper-Review-and-Practice/blob/master/co
 -dataset from Multi30k
 -baseline
 -trainable word embedding, positional embedding with relative position 
+-deeper network than exp4
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 imports
@@ -37,7 +38,7 @@ import gzip
 import argparse 
 import copy
 
-import hyperparameters as hparams
+import hyperparameters2 as hparams
 import customutils as utils
 
 def program_loop():
@@ -60,7 +61,7 @@ def program_loop():
 
 
     # accumulate_loss = 0
-    logger = TensorBoardLogger('runs', name='transformer_exp4_baseline', default_hp_metric=False)
+    logger = TensorBoardLogger('runs', name='transformer_exp5_baseline', default_hp_metric=False)
 
     def tokenize_en(text):
         return [token.text for token in spacy_en.tokenizer(text)]
