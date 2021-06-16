@@ -2,8 +2,8 @@ d_model = 256
 d_k =  64
 d_v =  64 
 n_heads = 4
-n_encoder = 2
-n_decoder = 2
+n_encoder = 1
+n_decoder = 1
 d_ff = 1024 
 batch_size = 512 
 label_smoothing = 0.1
@@ -17,4 +17,4 @@ n_steps = 100000
 k=3
 
 # for my experiment
-d_p = 8
+d_p = 32

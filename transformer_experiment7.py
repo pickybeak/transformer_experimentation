@@ -60,7 +60,7 @@ def program_loop():
 
 
     # accumulate_loss = 0
-    logger = TensorBoardLogger('runs', name='transformer_exp6', default_hp_metric=False)
+    logger = TensorBoardLogger('runs', name='transformer_exp7', default_hp_metric=False)
 
     def tokenize_en(text):
         return [token.text for token in spacy_en.tokenizer(text)]
@@ -440,6 +440,8 @@ def program_loop():
             self.local_embedding = nn.Embedding(2*k+1, self.d_p)
             self.abs_pos_embedding = nn.Embedding(max_length, self.d_v)
 
+            self.local_weight = nn.Embedding(max_length, 1)
+
             relation_map = torch.IntTensor(self.max_length, self.max_length)
             for i in range(max_length):
                 relation_map[i] = torch.arange(start=k - i, end=k - i + max_length)
@@ -455,6 +457,7 @@ def program_loop():
             local = self.local_embedding(local_map)
             overall = self.overall_embedding(overall_map)
             abs_pos = self.abs_pos_embedding(overall_map)
+            local_weight = self.local_weight(overall_map)
 
             # local : [query_len, query_len, d_p]
             # overall : [query_len, d_p]
@@ -462,8 +465,9 @@ def program_loop():
 
             overall = overall.view(query_len, self.d_p).permute(1,0)
             similarity = torch.matmul(local, overall)
+            similarity = torch.matmul(similarity, local_weight).squeeze()
             # similarity : [query_len(1), query_len(2), query_len(3)]
-            similarity = torch.sum(similarity, dim=-1)
+            # similarity = torch.sum(similarity, dim=-1)
             # similarity : [query_len(1), query_len(2)]
             similarity_norm = torch.softmax(similarity, dim=-1)
             abs_pos = torch.matmul(similarity_norm, abs_pos)
