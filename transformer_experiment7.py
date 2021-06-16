@@ -465,11 +465,13 @@ def program_loop():
 
             overall = overall.view(query_len, self.d_p).permute(1,0)
             similarity = torch.matmul(local, overall)
-            similarity = torch.matmul(similarity, local_weight).squeeze()
+            similarity = torch.matmul(similarity, local_weight).squeeze(dim=-1)
             # similarity : [query_len(1), query_len(2), query_len(3)]
             # similarity = torch.sum(similarity, dim=-1)
             # similarity : [query_len(1), query_len(2)]
             similarity_norm = torch.softmax(similarity, dim=-1)
+            # print('similarity',similarity_norm.shape)
+            # print('abs_pos',abs_pos.shape)
             abs_pos = torch.matmul(similarity_norm, abs_pos)
             # abs_pos : [query_len, d_v]
 
