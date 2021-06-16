@@ -471,18 +471,23 @@ def program_loop():
             [batch_size, query_len, d_p] overall
             [query_len, query_len, d_p] local
             
-            [query_len, d_p, batch_size] overall
-            [query_len, query_len, d_p] local
+            [d_p, query_len * batch_size] overall
+            [query_len * query_len, d_p] local
+            
+            =[query_len * query_len * query_len]
             
             [query_len, query_len, batch_size]
             [batch_size, query_len, query_len]
             '''
-
-            overall = overall.view(-1, query_len, self.d_p).permute(1, 2, 0)
+            realbatch = overall.shape[0]
+            overall = overall.view(realbatch, query_len, self.d_p).permute(2, 1, 0)
+            overall = overall.reshape(self.d_p, query_len * realbatch)
+            local = local.view(query_len*query_len, self.d_p)
             similarity = torch.matmul(local, overall)
-            similarity = similarity.permute(2,0,1)
-            # similarity : [query_len, query_len, query_len]
-            # similarity = torch.matmul(similarity, local_weight).squeeze(dim=-1)
+            # similarity : [query_len, query_len, query_len, batch_size]
+            similarity = similarity.view(query_len, query_len, query_len, realbatch).permute(3,0,1,2)
+            # similarity : [batch_size, query_len, query_len, query_len]
+            similarity = torch.matmul(similarity, local_weight.unsqueeze(1)).squeeze(dim=-1)
             # similarity : [batch_size, query_len, query_len]
             similarity_norm = torch.softmax(similarity, dim=-1)
             # print('similarity',similarity_norm.shape)
