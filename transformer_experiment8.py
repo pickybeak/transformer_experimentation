@@ -6,7 +6,7 @@ https://github.com/ndb796/Deep-Learning-Paper-Review-and-Practice/blob/master/co
 -dataset from Multi30k
 -my experiment
 -trainable word embedding, positional embedding with relative position
--local_weight is added
+-local weights will reflect the words
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 imports
@@ -61,7 +61,7 @@ def program_loop():
 
 
     # accumulate_loss = 0
-    logger = TensorBoardLogger('runs', name='transformer_exp7', default_hp_metric=False)
+    logger = TensorBoardLogger('runs', name='transformer_exp8', default_hp_metric=False)
 
     def tokenize_en(text):
         return [token.text for token in spacy_en.tokenizer(text)]
@@ -367,6 +367,7 @@ def program_loop():
 
             if self.self_:
                 self.pos_attention = PositionAttentionLayer(d_p=hparams.d_p,
+                                                            d_model = self.d_model,
                                                             d_v=self.d_v,
                                                             dropout_ratio=hparams.dropout_ratio,
                                                             max_length=self.max_length)
@@ -404,7 +405,7 @@ def program_loop():
 
             # x: [batch_size, n_heads, query_len, value_len(d_v)]
             if self.self_:
-                x += self.pos_attention(query_len)
+                x += self.pos_attention(value, query_len).unsqueeze(1)
             x = x.permute(0, 2, 1, 3).contiguous()
             # x: [batch_size, query_len, n_heads, d_v]
             x = x.view(batch_size, -1, self.d_model)
@@ -427,7 +428,7 @@ def program_loop():
             return [optimizer] #, [lr_scheduler]
 
     class PositionAttentionLayer(pl.LightningModule):
-        def __init__(self, d_p, d_v, dropout_ratio, max_length=100, k=hparams.k):
+        def __init__(self, d_p, d_v, d_model, dropout_ratio, max_length=100, k=hparams.k):
             super().__init__()
 
             @property
@@ -436,12 +437,13 @@ def program_loop():
 
             self.d_p = d_p
             self.d_v = d_v
+            self.d_model = d_model
             self.max_length = max_length
             self.overall_embedding = nn.Embedding(max_length, self.d_p)
             self.local_embedding = nn.Embedding(2*k+1, self.d_p)
             self.abs_pos_embedding = nn.Embedding(max_length, self.d_v)
 
-            self.local_weight = nn.Embedding(max_length, 1)
+            self.w_p = nn.Linear(self.d_model, self.d_p)
 
             relation_map = torch.IntTensor(self.max_length, self.max_length)
             for i in range(max_length):
@@ -451,30 +453,37 @@ def program_loop():
 
             self.register_buffer("absolute_map", torch.arange(max_length))
 
-        def forward(self, query_len):
+        def forward(self, x, query_len):
+            # x : []
             local_map = self.relation_map[:query_len, :query_len]
             overall_map = self.absolute_map[:query_len]
 
             local = self.local_embedding(local_map)
             overall = self.overall_embedding(overall_map)
             abs_pos = self.abs_pos_embedding(overall_map)
-            local_weight = self.local_weight(overall_map)
+            local_weight = self.w_p(x)
+            # local_weight : [batch_size, query_len, d_p]
+            local_weight = torch.matmul(local_weight, overall.permute(1,0))
+            local_weight = torch.sum(local_weight, dim=-1)
+            # local_weight : [batch_size, query_len]
 
             # local : [query_len, query_len, d_p]
             # overall : [query_len, d_p]
             # abs_pos : [query_len, d_v]
 
             overall = overall.view(query_len, self.d_p).permute(1,0)
+            # overall : [d_p, query_len]
             similarity = torch.matmul(local, overall)
-            similarity = torch.matmul(similarity, local_weight).squeeze(dim=-1)
             # similarity : [query_len(1), query_len(2), query_len(3)]
-            # similarity = torch.sum(similarity, dim=-1)
-            # similarity : [query_len(1), query_len(2)]
+            similarity = torch.matmul(similarity, local_weight.permute(1,0))
+            # similarity : [query_len, query_len, batch]
+            similarity = similarity.permute(2,0,1)
+            # similarity : [batch, query_len, query_len]
+
             similarity_norm = torch.softmax(similarity, dim=-1)
-            # print('similarity',similarity_norm.shape)
-            # print('abs_pos',abs_pos.shape)
+            # similarity : [batch, query_len, query_len]
             abs_pos = torch.matmul(similarity_norm, abs_pos)
-            # abs_pos : [query_len, d_v]
+            # abs_pos : [batch_size, query_len, d_v]
 
             return abs_pos
 
