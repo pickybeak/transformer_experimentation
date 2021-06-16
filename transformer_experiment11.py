@@ -61,7 +61,7 @@ def program_loop():
 
 
     # accumulate_loss = 0
-    logger = TensorBoardLogger('runs', name='transformer_exp7', default_hp_metric=False)
+    logger = TensorBoardLogger('runs', name='transformer_exp11', default_hp_metric=False)
 
     def tokenize_en(text):
         return [token.text for token in spacy_en.tokenizer(text)]
@@ -487,7 +487,7 @@ def program_loop():
             # similarity : [query_len, query_len, query_len, batch_size]
             similarity = similarity.view(query_len, query_len, query_len, realbatch).permute(3,0,1,2)
             # similarity : [batch_size, query_len, query_len, query_len]
-            similarity = torch.matmul(similarity, local_weight.unsqueeze(1)).squeeze(dim=-1)
+            similarity = torch.matmul(similarity, local_weight.unsqueeze(1).softmax(dim=2)).squeeze(dim=-1)
             # similarity : [batch_size, query_len, query_len]
             similarity_norm = torch.softmax(similarity, dim=-1)
             # print('similarity',similarity_norm.shape)
