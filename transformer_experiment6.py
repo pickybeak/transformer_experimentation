@@ -4,9 +4,8 @@ the code refered to
 https://github.com/ndb796/Deep-Learning-Paper-Review-and-Practice/blob/master/code_practices/Attention_is_All_You_Need_Tutorial_(German_English).ipynb
 
 -dataset from Multi30k
--baseline
--trainable word embedding, positional embedding with relative position 
--deeper network than exp4
+-my experiment
+-trainable word embedding, positional embedding with relative position
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 imports
@@ -292,6 +291,9 @@ def program_loop():
         def training_step(self, src):
             return self.forward(src)
 
+
+    # pretrained_embedding = PretrainedEmbedding()
+
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
     positional encoding
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -334,7 +336,7 @@ def program_loop():
     Self Attention
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
     class MultiHeadAttentionLayer(pl.LightningModule):
-        def __init__(self, d_k, d_v, d_model, n_heads, dropout_ratio, max_length=100, k=hparams.k, self_=True):
+        def __init__(self, d_k, d_v, d_model, n_heads, dropout_ratio, max_length=100, self_=True):
             super().__init__()
             @property
             def automatic_optimization(self):
@@ -363,17 +365,10 @@ def program_loop():
             self.register_buffer("scale", scale)
 
             if self.self_:
-                self.pos_key_embedding = nn.Embedding(2*k+1, self.d_k)
-                nn.init.xavier_uniform_(self.pos_key_embedding.weight.data)
-
-                self.pos_value_embedding = nn.Embedding(2*k+1, self.d_k)
-                nn.init.xavier_uniform_(self.pos_value_embedding.weight.data)
-
-                relation_map = torch.IntTensor(self.max_length, self.max_length)
-                for i in range(max_length):
-                    relation_map[i] = torch.arange(start=k-i, end=k-i+max_length)
-                relation_map = torch.clip(relation_map, min=0, max=2*k)
-                self.register_buffer("relation_map", relation_map)
+                self.pos_attention = PositionAttentionLayer(d_p=hparams.d_p,
+                                                            d_v=self.d_v,
+                                                            dropout_ratio=hparams.dropout_ratio,
+                                                            max_length=self.max_length)
 
         def forward(self, query, key, value, mask=None):
             # with profiler.record_function("MultiHeadAttentionLayer"):
@@ -385,15 +380,6 @@ def program_loop():
             K = self.w_k(key)
             V = self.w_v(value)
 
-            # embed relative position vector
-            if self.self_:
-                key_relation_map = self.relation_map[:query_len, :key_len]
-                value_relation_map = self.relation_map[:query_len, :value_len]
-                key_relative = self.pos_key_embedding(key_relation_map)
-                key_relative = key_relative.view(query_len, self.d_k, key_len)
-                value_relative = self.pos_value_embedding(value_relation_map)
-                # value_relative = value_relative.view(query_len, self.d_k, value_len)
-
             # make seperate heads
             Q = Q.view(batch_size, -1, self.n_heads, self.d_k).permute(0,2,1,3)
             K = K.view(batch_size, -1, self.n_heads, self.d_k).permute(0,2,1,3)
@@ -404,17 +390,6 @@ def program_loop():
             self.scale = self.scale.type_as(query)
             similarity = torch.matmul(Q, K.permute(0,1,3,2)) / self.scale
             # similarity: [batch_size, n_heads, query_len, key_len]
-            
-            if self.self_:
-                query_operator = Q.view(batch_size, self.n_heads, query_len, self.d_k).permute(1,2,0,3)
-                # query_operator : [query_len, batch_size, n_heads, d_k]
-                query_operator = query_operator.reshape(query_len, batch_size*self.n_heads, self.d_k)
-
-                query_operator = torch.matmul(query_operator, key_relative)
-                query_operator = query_operator.view(batch_size, self.n_heads, query_len, -1)
-                # query_operator : [batch_size, n_heads, query_len, key_len]
-			
-                similarity += query_operator
 
             if mask is not None:
                 similarity = similarity.masked_fill(mask==0, -1e10)
@@ -426,17 +401,9 @@ def program_loop():
             # value_relative = torch.sum(value_relative, dim=1).to(self.device)
             x = torch.matmul(self.dropout(similarity_norm), V)
 
+            # x: [batch_size, n_heads, query_len, value_len(d_v)]
             if self.self_:
-                value_operator = similarity_norm.view(batch_size, self.n_heads, query_len, key_len).permute(1,2,0,3)
-                # value_operator : [query_len, batch_size, n_heads, key_len]
-                value_operator = value_operator.reshape(query_len, batch_size*self.n_heads, key_len)
-
-                value_operator = torch.matmul(value_operator, value_relative)
-                value_operator = value_operator.view(batch_size, self.n_heads, query_len, self.d_k)
-                # value_operator : [batch_size, n_heads, query_len, d_k]
-                x += value_operator
-
-            # x: [batch_size, n_heads, query_len, key_len]
+                x += self.pos_attention(query_len)
             x = x.permute(0, 2, 1, 3).contiguous()
             # x: [batch_size, query_len, n_heads, d_v]
             x = x.view(batch_size, -1, self.d_model)
@@ -456,14 +423,59 @@ def program_loop():
         def configure_optimizers(self):
             # warmup_steps = 4000
             optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
-            '''
-            scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
-                                                    lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*hparams.warmup_steps**(-1.5)),
-                                                    last_epoch=-1)
-            # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
-            lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-            '''
             return [optimizer] #, [lr_scheduler]
+
+    class PositionAttentionLayer(pl.LightningModule):
+        def __init__(self, d_p, d_v, dropout_ratio, max_length=100, k=hparams.k):
+            super().__init__()
+
+            @property
+            def automatic_optimization(self):
+                return True
+
+            self.d_p = d_p
+            self.d_v = d_v
+            self.max_length = max_length
+            self.overall_embedding = nn.Embedding(max_length, self.d_p)
+            self.local_embedding = nn.Embedding(2*k+1, self.d_p)
+            self.abs_pos_embedding = nn.Embedding(max_length, self.d_v)
+
+            relation_map = torch.IntTensor(self.max_length, self.max_length)
+            for i in range(max_length):
+                relation_map[i] = torch.arange(start=k - i, end=k - i + max_length)
+            relation_map = torch.clip(relation_map, min=0, max=2 * k)
+            self.register_buffer("relation_map", relation_map)
+
+            self.register_buffer("absolute_map", torch.arange(max_length))
+
+        def forward(self, query_len):
+            local_map = self.relation_map[:query_len, :query_len]
+            overall_map = self.absolute_map[:query_len]
+
+            local = self.local_embedding(local_map)
+            overall = self.overall_embedding(overall_map)
+            abs_pos = self.abs_pos_embedding(overall_map)
+
+            # local : [query_len, query_len, d_p]
+            # overall : [query_len, d_p]
+            # abs_pos : [query_len, d_v]
+
+            overall = overall.view(query_len, self.d_p).permute(1,0)
+            similarity = torch.matmul(local, overall)
+            # similarity : [query_len(1), query_len(2), query_len(3)]
+            similarity = torch.sum(similarity, dim=1)
+            # similarity : [query_len(1), query_len(3)]
+            abs_pos = torch.matmul(similarity, abs_pos)
+            # abs_pos : [query_len, d_v]
+
+            return abs_pos
+
+        def training_step(self, query_len):
+            return self.forward(query_len)
+
+        def configure_optimizers(self):
+            optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
+            return [optimizer]
 
     class PositionwiseFeedforwardLayer(pl.LightningModule):
         def __init__(self, d_model, d_ff, dropout_ratio):
@@ -495,13 +507,6 @@ def program_loop():
         def configure_optimizers(self):
             # warmup_steps = 4000
             optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
-            '''
-            scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
-                                                    lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*hparams.warmup_steps**(-1.5)),
-                                                    last_epoch=-1)
-            # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
-            lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-            '''
             return [optimizer] #, [lr_scheduler]
 
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -545,13 +550,6 @@ def program_loop():
         def configure_optimizers(self):
             # warmup_steps = 4000
             optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
-            '''
-            scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
-                                                    lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*hparams.warmup_steps**(-1.5)),
-                                                    last_epoch=-1)
-            # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
-            lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-            '''
             return [optimizer] #, [lr_scheduler]
 
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -606,14 +604,6 @@ def program_loop():
         def configure_optimizers(self):
             # warmup_steps = 4000
             optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
-            '''
-            scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
-                                                    lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*hparams.warmup_steps**(-1.5)),
-                                                    last_epoch=-1)
-            # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
-            lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-			'''
-            
             return [optimizer] #, [lr_scheduler]
 
 
@@ -639,7 +629,7 @@ def program_loop():
                                                               d_model=d_model,
                                                               n_heads=n_heads,
                                                               dropout_ratio=dropout_ratio,
-															  self_=False)
+                                                              self_=False)
 
             self.enc_dec_attn_layer_norm = nn.LayerNorm(d_model)
 
@@ -672,13 +662,6 @@ def program_loop():
         def configure_optimizers(self):
             # warmup_steps = 4000
             optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
-            '''
-            scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
-                                                    lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*hparams.warmup_steps**(-1.5)),
-                                                    last_epoch=-1)
-            # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
-            lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-			'''
             return [optimizer] #, [lr_scheduler]
 
 
@@ -819,13 +802,6 @@ def program_loop():
         def configure_optimizers(self):
             # warmup_steps = 4000
             optimizer = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-3, lr=hparams.learning_rate, amsgrad=True)
-            '''
-            scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
-                                                    lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*hparams.warmup_steps**(-1.5)),
-                                                    last_epoch=-1)
-            # lr_scheduler = {'scheduler':scheduler, 'name':'my_log'}
-            lr_scheduler = {'scheduler':scheduler, 'name':'lr-base', 'interval':'step', 'frequency':1}
-            '''
             return [optimizer] #, [lr_scheduler]
 
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -930,255 +906,6 @@ def program_loop():
 
     SRC_PAD_IDX = SRC.vocab.stoi[SRC.pad_token]
     TRG_PAD_IDX = TRG.vocab.stoi[TRG.pad_token]
-
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    Preparing for Training (pytorch)
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    '''
-    instance and initialize model. This moved to pl hoods 'init' at TrainModel
-    '''
-    # if os.path.isfile(model_filepath):
-    #     model.load_state_dict(torch.load(model_filepath, map_location=device))
-    #     print('model loaded from saved file')
-    #     sys.stdout.flush()
-    # else:
-    #     model.apply(utils.initalize_weights)
-
-    # print(f'The model has {utils.count_parameters(model):,} trainable parameters')
-    # sys.stdout.flush()
-
-    '''
-    set optimizer, scheduler and loss function. This moved to pl hoods 'configure_optimizers'
-    '''
-    # optimizer = torch.optim.Adam(model.parameters(), betas=(0.9, 0.98), eps=1e-09, lr=hparams.learning_rate)
-    # scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer,
-    #                                         lr_lambda=lambda steps:(hparams.d_model**(-0.5))*min((steps+1)**(-0.5), (steps+1)*warmup_steps**(-1.5)),
-    #                                         last_epoch=-1,
-    #                                         verbose=False)
-
-    # loss_fn = nn.CrossEntropyLoss(ignore_index=TRG_PAD_IDX)
-    # loss_fn = LabelSmoothingLoss(smoothing=hparams.label_smoothing, classes=len(TRG.vocab.stoi), ignore_index=TRG_PAD_IDX)
-
-    # parallel_model = DataParallelModel(model, device_ids=[0,1])
-    # parallel_model.to(device)
-    # parallel_loss = DataParallelCriterion(loss_fn, device_ids=[0,1])
-    # parallel_loss.to(device)
-
-
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    Train (pytorch)
-    
-    train method for pytorch single gpu version.
-    since working enviornment takes too long to complete 1 epoch, make frequent log and save model
-    logged after (iter_part * batch_size) are completed
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-    def train_model(model, iterator, optimizer, loss_fn, epoch_num, iter_part=150):
-        global best_valid_loss
-        total_length = len(train.examples)
-        total_parts = total_length // (hparams.batch_size * iter_part)
-
-        if total_length % (hparams.batch_size * iter_part) != 0:
-            total_parts+=1
-
-        current_part = 1
-        model.train()
-        epoch_loss = 0
-
-        part_start_time = utils.time.time()
-
-        for i, batch in enumerate(iterator):
-            src = batch[0].to(device, non_blocking=True)
-            trg = batch[1].to(device, non_blocking=True)
-
-            '''for bucketiterator users'''
-            # src = batch.src
-            # trg = batch.trg
-            ''''''''''''''''''''''''''''''
-
-            optimizer.zero_grad(set_to_none=True)
-
-            '''exclude <eos> for decoder input'''
-            # output, _ = model(src, trg[:, :-1])
-            output, _ = model(src, trg[:, :-1])
-            # output: [batch_size, trg_len-1, output_dim]
-
-            output_dim = output.shape[-1]
-            output = output.contiguous().view(-1, output_dim)
-
-            # output: [batch_size*trg_len-1, output_dim]
-
-            trg = trg[:,1:].contiguous().view(-1)
-            # trg: [batch_size*trg_len-1]
-
-            # loss = loss_fn(output, trg)
-            loss = loss_fn(output, trg)
-            loss.backward()
-
-            '''graident clipping'''
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
-
-            '''parameter update'''
-            optimizer.step()
-            # scheduler.step()
-
-            '''total loss in each epochs'''
-            epoch_loss += float(loss.item())
-
-            '''part log part'''
-            if (i+1) % iter_part == 0:
-                print(f'{total_length if (i+1)*hparams.batch_size > total_length else (i+1)*hparams.batch_size} / {total_length}, part {current_part} / {total_parts} complete...')
-                part_end_time = utils.time.time()
-                part_mins, part_secs = utils.crop_time(part_start_time, part_end_time)
-                print(f'Part Train Loss: {epoch_loss / (i+1):.3f} | Part Train PPL: {utils.math.exp(epoch_loss / (i+1)):.3f} | Time : {part_mins}m {part_secs}s')
-                sys.stdout.flush()
-                valid_loss = evaluate_model(model, valid_loader, loss_fn)
-                print(f'Validation Loss: {valid_loss:.3f} | Validation PPL: {utils.math.exp(valid_loss):.3f}')
-                if valid_loss < best_valid_loss:
-                    best_valid_loss = valid_loss
-                    torch.save(model.state_dict(), f'{model_name}.pt')
-                    print(f'model saved at {model_name}')
-                # show_bleu(test, SRC, TRG, model, device) '''show_bleu is too slow'''
-                part_end_time = utils.time.time()
-                part_mins, part_secs = utils.crop_time(part_start_time, part_end_time)
-                print(f'{part_mins}m {part_secs}s')
-                current_part += 1
-                sys.stdout.flush()
-                model.train()
-                part_start_time = utils.time.time()
-            del loss
-        return epoch_loss / len(iterator)
-
-
-
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    Evaluation (pytorch)
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    def evaluate_model(model, iterator, loss_fn):
-        model.eval()
-        epoch_loss = 0
-
-        with torch.no_grad():
-            for i, batch in enumerate(iterator):
-                src = batch[0].to(device, non_blocking=True)
-                trg = batch[1].to(device, non_blocking=True)
-
-                output, _ = model(src, trg[:, :-1])
-
-                output_dim = output.shape[-1]
-
-                '''exclude <eos> for decoder input'''
-                output, _ = model(src, trg[:, :-1])
-                # output: [batch_size, trg_len-1, output_dim]
-
-                output_dim = output.shape[-1]
-                output = output.contiguous().view(-1, output_dim)
-                # output: [batch_size*trg_len-1, output_dim]
-
-                trg = trg[:, 1:].contiguous().view(-1)
-                # trg: [batch_size*trg_len-1]
-
-                loss = loss_fn(output, trg)
-
-                '''total loss in each epochs'''
-                epoch_loss += float(loss.item())
-
-        return epoch_loss / len(iterator)
-
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    Generation (pytorch)
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    def translate_sentence(sentence, SRC, TRG, model, device, max_len=50, logging=False):
-        model.eval()
-
-        if isinstance(sentence, str):
-            tokenizer = spacy.load('de_core_news_sm')
-            tokens = [token.text.lower() for token in tokenizer(sentence)]
-        else:
-            tokens = [token.lower() for token in sentence]
-
-        '''put <sos> in the first, <eos> in the end.'''
-        tokens = [SRC.init_token] + tokens + [SRC.eos_token]
-        '''convert to indexes'''
-        src_indexes = [SRC.vocab.stoi[token] for token in tokens]
-
-        if logging:
-            print(f'src tokens : {tokens}')
-            print(f'src indexes : {src_indexes}')
-
-        src_tensor = torch.LongTensor(src_indexes).unsqueeze(0).to(device)
-
-        src_pad_mask = model.make_src_mask(src_tensor)
-
-        with torch.no_grad():
-            enc_src = model.encoder(src_tensor, src_pad_mask)
-
-        '''always start with first token'''
-        trg_indexes = [TRG.vocab.stoi[TRG.init_token]]
-
-        for i in range(max_len):
-            trg_tensor = torch.LongTensor(trg_indexes).unsqueeze(0).to(device)
-            trg_mask = model.make_src_mask(trg_tensor)
-
-            with torch.no_grad():
-                output, attention = model.decoder(trg_tensor, enc_src, trg_mask, src_pad_mask)
-
-            # output: [batch_size, trg_len, output_dim]
-            pred_token = output.argmax(2)[:,-1].item()
-            trg_indexes.append(pred_token)
-
-            if pred_token == TRG.vocab.stoi[TRG.eos_token]:
-                break
-
-        trg_tokens = [TRG.vocab.itos[i] for i in trg_indexes]
-
-        return trg_tokens[1:], attention
-
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    Training (pytorch)
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    '''
-    for epoch in range(hparams.n_epochs):
-        start_time = utils.time.time()
-        train_loss = train_model(model, train_loader, optimizer, parallel_loss, epoch)
-        valid_loss = evaluate_model(model, valid_loader, parallel_loss)
-        end_time = utils.time.time()
-        epoch_mins, epoch_secs = utils.crop_time(start_time, end_time)
-    
-        if valid_loss < best_valid_loss:
-            best_valid_loss = valid_loss
-            torch.save(model.state_dict(), '{model_name}.pt')
-            print('model saved')
-        print('---------------------------------------------------------')
-        print(f'Epoch: {epoch+1:03} Time: {epoch_mins}m {epoch_secs}s')
-        print(f'Train Loss: {train_loss:.3f} Train PPL: {utils.math.exp(train_loss):.3f}')
-        print(f'Validation Loss: {valid_loss:.3f} Validation PPL: {utils.math.exp(valid_loss):.3f}')
-        show_bleu(test, SRC, TRG, model, device)
-        print('---------------------------------------------------------')
-        print('\n')
-        sys.stdout.flush()
-    '''
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    Generation Test (pytorch)
-    '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-    '''
-    example_idx=10
-    src = vars(test.examples[example_idx])['src']
-    trg = vars(test.examples[example_idx])['trg']
-    print('generation:')
-    print(f'src : {src}')
-    print(f'trg : {trg}')
-    translation, attention = translate_sentence(sentence=src,
-                                                SRC=SRC,
-                                                TRG=TRG,
-                                                model=model,
-                                                device=device)
-    print('result :', ' '.join(translation))
-    
-    
-    
-    show_bleu(test, SRC, TRG, model, device)
-    '''
 
     '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
     TrainModel (pytorch lightning)

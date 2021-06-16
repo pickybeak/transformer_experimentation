@@ -15,3 +15,6 @@ n_steps = 100000
 
 # for relative position encoding
 k=3
+
+# for my experiment
+d_p = 8
